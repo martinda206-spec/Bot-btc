@@ -3,7 +3,7 @@ import time
 import requests
 import pandas as pd
 
-TOKEN = os.getenv("TOKEN")
+TOKEN = "8581404343:AAHCAZh6f0V55MBRtH1knrlR-1z23sDIWM0"
 CHAT_ID = os.getenv("CHAT_ID", "2123346158")
 
 SYMBOL = "BTCUSDT"
