@@ -18,6 +18,7 @@ posicion_abierta = None
 
 def enviar_mensaje(texto):
     if not TOKEN:
+        print("ERROR: falta TOKEN")
         return
 
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
@@ -27,9 +28,25 @@ def enviar_mensaje(texto):
 def obtener_datos():
     url = "https://fapi.binance.com/fapi/v1/klines"
     params = {"symbol": SYMBOL, "interval": INTERVAL, "limit": 250}
-    data = requests.get(url, params=params, timeout=10).json()
+
+    response = requests.get(url, params=params, timeout=10)
+
+    if response.status_code != 200:
+        print("Error HTTP Binance:", response.status_code)
+        return None
+
+    data = response.json()
+
+    if not isinstance(data, list):
+        print("Error datos Binance:", data)
+        return None
 
     df = pd.DataFrame(data)
+
+    if df.empty:
+        print("DataFrame vacío")
+        return None
+
     df = df.iloc[:, :6]
     df.columns = ["time", "open", "high", "low", "close", "volume"]
 
@@ -72,7 +89,13 @@ def detectar(df):
 
     precio = last["close"]
 
-    if pd.isna(last["vol_ma20"]) or pd.isna(last["rsi"]) or pd.isna(last["atr"]):
+    if (
+        pd.isna(last["vol_ma20"])
+        or pd.isna(last["rsi"])
+        or pd.isna(last["atr"])
+        or pd.isna(prev["max_20"])
+        or pd.isna(prev["min_20"])
+    ):
         return "ESPERAR", precio, None
 
     volumen_ok = last["volume"] > last["vol_ma20"] * 1.2
@@ -97,6 +120,9 @@ def detectar(df):
 
 def abrir_posicion(tipo, precio, atr):
     global posicion_abierta, balance
+
+    if atr is None or pd.isna(atr) or atr <= 0:
+        return
 
     margen = balance * margen_por_trade
     tamaño_posicion = margen * apalancamiento
@@ -150,6 +176,7 @@ def gestionar_posicion(precio):
 
     cerrar = False
     resultado = ""
+    pnl = 0.0
 
     if tipo == "LONG":
         if precio <= sl:
@@ -161,7 +188,7 @@ def gestionar_posicion(precio):
             resultado = "✅ TAKE PROFIT"
             cerrar = True
 
-    if tipo == "SHORT":
+    elif tipo == "SHORT":
         if precio >= sl:
             pnl = (entrada - sl) * cantidad
             resultado = "❌ STOP LOSS"
@@ -199,6 +226,11 @@ Timeframe: {INTERVAL}
     while True:
         try:
             df = obtener_datos()
+
+            if df is None:
+                time.sleep(60)
+                continue
+
             df = indicadores(df)
 
             señal, precio, atr = detectar(df)
@@ -208,7 +240,7 @@ Timeframe: {INTERVAL}
             if señal != "ESPERAR" and posicion_abierta is None:
                 abrir_posicion(señal, precio, atr)
 
-            print("Precio:", precio, "Balance:", balance)
+            print("Precio:", precio, "Balance:", balance, "Señal:", señal)
 
             time.sleep(60)
 
