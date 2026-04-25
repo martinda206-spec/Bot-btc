@@ -9,9 +9,11 @@ CHAT_ID = os.getenv("CHAT_ID", "2123346158")
 SYMBOL = "BTCUSDT"
 INTERVAL = "15m"
 
-balance = 100.0
-apalancamiento = 3
-margen_por_trade = 0.30
+balance = 1000.0
+balance_inicial = 1000.0
+
+apalancamiento = 5
+riesgo_por_trade = 0.01
 
 posicion_abierta = None
 
@@ -20,7 +22,6 @@ def enviar_mensaje(texto):
     if not TOKEN:
         print("ERROR: falta TOKEN")
         return
-
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     requests.post(url, data={"chat_id": CHAT_ID, "text": texto}, timeout=10)
 
@@ -30,27 +31,21 @@ def obtener_datos():
     params = {"symbol": SYMBOL, "interval": INTERVAL, "limit": 250}
 
     response = requests.get(url, params=params, timeout=10)
-
     if response.status_code != 200:
-        print("Error HTTP Binance:", response.status_code)
         return None
 
     data = response.json()
-
     if not isinstance(data, list):
-        print("Error datos Binance:", data)
         return None
 
     df = pd.DataFrame(data)
-
     if df.empty:
-        print("DataFrame vacío")
         return None
 
     df = df.iloc[:, :6]
     df.columns = ["time", "open", "high", "low", "close", "volume"]
 
-    for col in ["open", "high", "low", "close", "volume"]:
+    for col in df.columns[1:]:
         df[col] = df[col].astype(float)
 
     return df
@@ -66,7 +61,6 @@ def indicadores(df):
     delta = df["close"].diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
-
     rs = gain.rolling(14).mean() / loss.rolling(14).mean()
     df["rsi"] = 100 - (100 / (1 + rs))
 
@@ -87,32 +81,31 @@ def detectar(df):
     last = df.iloc[-1]
     prev = df.iloc[-2]
 
+    if pd.isna(last["atr"]) or pd.isna(prev["max_20"]):
+        return "ESPERAR", last["close"], None
+
     precio = last["close"]
-
-    if (
-        pd.isna(last["vol_ma20"])
-        or pd.isna(last["rsi"])
-        or pd.isna(last["atr"])
-        or pd.isna(prev["max_20"])
-        or pd.isna(prev["min_20"])
-    ):
-        return "ESPERAR", precio, None
-
     volumen_ok = last["volume"] > last["vol_ma20"] * 1.2
 
-    tendencia_long = precio > last["ema25"] > last["ema50"] > last["ema99"]
-    tendencia_short = precio < last["ema25"] < last["ema50"] < last["ema99"]
+    long = (
+        precio > last["ema25"] > last["ema50"] > last["ema99"]
+        and last["rsi"] > 55
+        and last["macd"] > last["macd_signal"]
+        and precio > prev["max_20"]
+        and volumen_ok
+    )
 
-    momentum_long = last["rsi"] > 55 and last["macd"] > last["macd_signal"]
-    momentum_short = last["rsi"] < 45 and last["macd"] < last["macd_signal"]
+    short = (
+        precio < last["ema25"] < last["ema50"] < last["ema99"]
+        and last["rsi"] < 45
+        and last["macd"] < last["macd_signal"]
+        and precio < prev["min_20"]
+        and volumen_ok
+    )
 
-    breakout_long = precio > prev["max_20"]
-    breakout_short = precio < prev["min_20"]
-
-    if tendencia_long and momentum_long and breakout_long and volumen_ok:
+    if long:
         return "LONG", precio, last["atr"]
-
-    if tendencia_short and momentum_short and breakout_short and volumen_ok:
+    if short:
         return "SHORT", precio, last["atr"]
 
     return "ESPERAR", precio, None
@@ -121,132 +114,130 @@ def detectar(df):
 def abrir_posicion(tipo, precio, atr):
     global posicion_abierta, balance
 
-    if atr is None or pd.isna(atr) or atr <= 0:
-        return
+    riesgo = balance * riesgo_por_trade
+    distancia = atr * 1.5
 
-    margen = balance * margen_por_trade
-    tamaño_posicion = margen * apalancamiento
-    cantidad_btc = tamaño_posicion / precio
+    cantidad = riesgo / distancia
+    tamaño = cantidad * precio
+    margen = tamaño / apalancamiento
 
     if tipo == "LONG":
-        sl = precio - atr * 1.5
-        tp = precio + atr * 3
+        sl = precio - distancia
+        tp1 = precio + distancia * 2
+        tp2 = precio + distancia * 3
     else:
-        sl = precio + atr * 1.5
-        tp = precio - atr * 3
+        sl = precio + distancia
+        tp1 = precio - distancia * 2
+        tp2 = precio - distancia * 3
 
     posicion_abierta = {
         "tipo": tipo,
         "entrada": precio,
         "sl": sl,
-        "tp": tp,
-        "margen": margen,
-        "tamaño": tamaño_posicion,
-        "cantidad": cantidad_btc
+        "tp1": tp1,
+        "tp2": tp2,
+        "cantidad_total": cantidad,
+        "cantidad_restante": cantidad,
+        "tp1_tomado": False,
+        "mejor_precio": precio
     }
 
     enviar_mensaje(f"""
-📥 NUEVA OPERACIÓN SIMULADA
+📥 NUEVA OPERACIÓN
 
 Tipo: {tipo}
 Entrada: {precio:.2f}
-
-Apalancamiento: {apalancamiento}x
-Margen usado: {margen:.2f} USDT
-Tamaño posición: {tamaño_posicion:.2f} USDT
-
 SL: {sl:.2f}
-TP: {tp:.2f}
+TP1: {tp1:.2f}
+TP2: {tp2:.2f}
 
-Balance actual: {balance:.2f} USDT
+Balance: {balance:.2f}
 """)
 
 
-def gestionar_posicion(precio):
+def gestionar(precio, atr):
     global posicion_abierta, balance
 
     if not posicion_abierta:
         return
 
-    tipo = posicion_abierta["tipo"]
-    entrada = posicion_abierta["entrada"]
-    sl = posicion_abierta["sl"]
-    tp = posicion_abierta["tp"]
-    cantidad = posicion_abierta["cantidad"]
+    p = posicion_abierta
+    entrada = p["entrada"]
 
-    cerrar = False
-    resultado = ""
-    pnl = 0.0
+    if p["tipo"] == "LONG":
+        p["mejor_precio"] = max(p["mejor_precio"], precio)
 
-    if tipo == "LONG":
-        if precio <= sl:
-            pnl = (sl - entrada) * cantidad
-            resultado = "❌ STOP LOSS"
-            cerrar = True
-        elif precio >= tp:
-            pnl = (tp - entrada) * cantidad
-            resultado = "✅ TAKE PROFIT"
-            cerrar = True
+        if not p["tp1_tomado"] and precio >= p["tp1"]:
+            pnl = (p["tp1"] - entrada) * (p["cantidad_total"] / 2)
+            balance += pnl
+            p["cantidad_restante"] /= 2
+            p["tp1_tomado"] = True
+            p["sl"] = entrada
 
-    elif tipo == "SHORT":
-        if precio >= sl:
-            pnl = (entrada - sl) * cantidad
-            resultado = "❌ STOP LOSS"
-            cerrar = True
-        elif precio <= tp:
-            pnl = (entrada - tp) * cantidad
-            resultado = "✅ TAKE PROFIT"
-            cerrar = True
+        if precio <= p["sl"]:
+            pnl = (p["sl"] - entrada) * p["cantidad_restante"]
+            balance += pnl
+            cerrar()
 
-    if cerrar:
-        balance += pnl
+        if precio >= p["tp2"]:
+            pnl = (p["tp2"] - entrada) * p["cantidad_restante"]
+            balance += pnl
+            cerrar()
 
-        enviar_mensaje(f"""
-📤 CIERRE OPERACIÓN SIMULADA
+    else:
+        p["mejor_precio"] = min(p["mejor_precio"], precio)
 
-Resultado: {resultado}
-PnL: {pnl:.2f} USDT
+        if not p["tp1_tomado"] and precio <= p["tp1"]:
+            pnl = (entrada - p["tp1"]) * (p["cantidad_total"] / 2)
+            balance += pnl
+            p["cantidad_restante"] /= 2
+            p["tp1_tomado"] = True
+            p["sl"] = entrada
 
-Balance actualizado: {balance:.2f} USDT
+        if precio >= p["sl"]:
+            pnl = (entrada - p["sl"]) * p["cantidad_restante"]
+            balance += pnl
+            cerrar()
+
+        if precio <= p["tp2"]:
+            pnl = (entrada - p["tp2"]) * p["cantidad_restante"]
+            balance += pnl
+            cerrar()
+
+
+def cerrar():
+    global posicion_abierta, balance
+    rendimiento = ((balance - balance_inicial) / balance_inicial) * 100
+
+    enviar_mensaje(f"""
+📤 CIERRE
+
+Balance: {balance:.2f}
+Rendimiento: {rendimiento:.2f}%
 """)
 
-        posicion_abierta = None
+    posicion_abierta = None
 
 
 def run():
-    enviar_mensaje(f"""
-🚀 Simulador iniciado
-
-Balance inicial: {balance:.2f} USDT
-Apalancamiento: {apalancamiento}x
-Margen por operación: {margen_por_trade * 100:.0f}%
-Timeframe: {INTERVAL}
-""")
+    enviar_mensaje("🚀 BOT PRO ACTIVO")
 
     while True:
-        try:
-            df = obtener_datos()
-
-            if df is None:
-                time.sleep(60)
-                continue
-
-            df = indicadores(df)
-
-            señal, precio, atr = detectar(df)
-
-            gestionar_posicion(precio)
-
-            if señal != "ESPERAR" and posicion_abierta is None:
-                abrir_posicion(señal, precio, atr)
-
-            print("Precio:", precio, "Balance:", balance, "Señal:", señal)
-
+        df = obtener_datos()
+        if df is None:
             time.sleep(60)
+            continue
 
-        except Exception as e:
-            print("Error:", e)
-            time.sleep(60)
+        df = indicadores(df)
+        señal, precio, atr = detectar(df)
+
+        gestionar(precio, atr)
+
+        if señal != "ESPERAR" and posicion_abierta is None:
+            abrir_posicion(señal, precio, atr)
+
+        print(balance)
+        time.sleep(60)
 
 
 run()
