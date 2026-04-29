@@ -1,15 +1,16 @@
+import os
 import time
 import requests
 import pandas as pd
 
 # ================= CONFIG =================
 
-TELEGRAM_BOT_TOKEN = "8581404343:AAHCAZh6f0V55MBRtH1knrlR-1z23sDIWM0"
-TELEGRAM_CHAT_ID = "2123346158"
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "2123346158")
 
-BASE_URL = "https://fapi.binance.com"
+BASE_URL = "https://api.binance.com"
 
-SYMBOL = "BTCUSDT"  # 🔥 CORREGIDO
+SYMBOL = "BTCUSDT"
 INTERVAL = "15m"
 
 EMA_FAST = 25
@@ -29,9 +30,15 @@ last_signal_time = None
 
 
 def send_telegram(message):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Falta TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID")
+        return
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+
     try:
-        requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+        r = requests.post(
+            url,
             data={
                 "chat_id": TELEGRAM_CHAT_ID,
                 "text": message,
@@ -39,12 +46,13 @@ def send_telegram(message):
             },
             timeout=10
         )
-    except:
-        pass
+        r.raise_for_status()
+    except Exception as e:
+        print("Error enviando Telegram:", e)
 
 
 def get_klines():
-    url = BASE_URL + "/fapi/v1/klines"
+    url = BASE_URL + "/api/v3/klines"
 
     r = requests.get(
         url,
@@ -53,7 +61,9 @@ def get_klines():
             "interval": INTERVAL,
             "limit": 150
         },
-        headers={"User-Agent": "Mozilla/5.0"},
+        headers={
+            "User-Agent": "Mozilla/5.0"
+        },
         timeout=10
     )
 
@@ -61,12 +71,13 @@ def get_klines():
     data = r.json()
 
     df = pd.DataFrame(data, columns=[
-        "time","open","high","low","close","volume",
-        "ct","qv","trades","tb","tq","ig"
+        "time", "open", "high", "low", "close", "volume",
+        "close_time", "quote_volume", "trades",
+        "taker_buy_base", "taker_buy_quote", "ignore"
     ])
 
-    df[["open","high","low","close","volume"]] = df[
-        ["open","high","low","close","volume"]
+    df[["open", "high", "low", "close", "volume"]] = df[
+        ["open", "high", "low", "close", "volume"]
     ].astype(float)
 
     df["ema25"] = df["close"].ewm(span=EMA_FAST).mean()
@@ -79,79 +90,111 @@ def get_klines():
 
 def check_signal():
     df = get_klines()
-    c = df.iloc[-2]
 
-    close = c["close"]
-    open_ = c["open"]
-    volume = c["volume"]
+    candle = df.iloc[-2]
 
-    ema25 = c["ema25"]
-    ema50 = c["ema50"]
-    ema99 = c["ema99"]
-    vol_ma = c["vol_ma"]
+    open_price = candle["open"]
+    close = candle["close"]
+    volume = candle["volume"]
 
-    candle_time = int(c["time"])
+    ema25 = candle["ema25"]
+    ema50 = candle["ema50"]
+    ema99 = candle["ema99"]
+    vol_ma = candle["vol_ma"]
 
-    near = (
-        abs(close - ema25)/close < PULLBACK_DISTANCE or
-        abs(close - ema50)/close < PULLBACK_DISTANCE
+    candle_time = int(candle["time"])
+
+    near_ema = (
+        abs(close - ema25) / close <= PULLBACK_DISTANCE or
+        abs(close - ema50) / close <= PULLBACK_DISTANCE
     )
 
-    vol_ok = volume > vol_ma
+    volume_ok = volume > vol_ma
 
-    if ema25 > ema50 and close > ema99 and close > open_ and near and vol_ok:
+    bullish = close > open_price
+    bearish = close < open_price
+
+    long_signal = (
+        ema25 > ema50 and
+        close > ema99 and
+        bullish and
+        near_ema and
+        volume_ok
+    )
+
+    short_signal = (
+        ema25 < ema50 and
+        close < ema99 and
+        bearish and
+        near_ema and
+        volume_ok
+    )
+
+    if long_signal:
+        entry = close
+        tp = entry * (1 + TAKE_PROFIT_PCT)
+        sl = entry * (1 - STOP_LOSS_PCT)
+
         return {
-            "type": "🟢 LONG",
-            "entry": close,
-            "tp": close * (1 + TAKE_PROFIT_PCT),
-            "sl": close * (1 - STOP_LOSS_PCT),
+            "type": "🟢 COMPRA / LONG",
+            "entry": entry,
+            "tp": tp,
+            "sl": sl,
             "time": candle_time
         }
 
-    if ema25 < ema50 and close < ema99 and close < open_ and near and vol_ok:
+    if short_signal:
+        entry = close
+        tp = entry * (1 - TAKE_PROFIT_PCT)
+        sl = entry * (1 + STOP_LOSS_PCT)
+
         return {
-            "type": "🔴 SHORT",
-            "entry": close,
-            "tp": close * (1 - TAKE_PROFIT_PCT),
-            "sl": close * (1 + STOP_LOSS_PCT),
+            "type": "🔴 VENTA / SHORT",
+            "entry": entry,
+            "tp": tp,
+            "sl": sl,
             "time": candle_time
         }
 
+    return None
 
-def format_msg(s):
+
+def format_signal(signal):
     return (
         f"📊 <b>SEÑAL {SYMBOL}</b>\n\n"
-        f"{s['type']}\n"
-        f"Entrada: {s['entry']:.2f}\n"
-        f"TP: {s['tp']:.2f}\n"
-        f"SL: {s['sl']:.2f}\n\n"
-        f"⏱ 15m"
+        f"Tipo: <b>{signal['type']}</b>\n"
+        f"Entrada: <b>{signal['entry']:.2f}</b>\n"
+        f"Take Profit: <b>{signal['tp']:.2f}</b>\n"
+        f"Stop Loss: <b>{signal['sl']:.2f}</b>\n\n"
+        f"⏱ Temporalidad: {INTERVAL}\n"
+        f"📈 Estrategia: EMA25 / EMA50 / EMA99 + Volumen"
     )
 
 
 def main():
     global last_signal_time
 
-    send_telegram(f"🤖 Bot activo ({SYMBOL})")
+    print("Bot de señales iniciado")
+    send_telegram(f"🤖 Bot de señales iniciado\nPar: {SYMBOL}\nTemporalidad: {INTERVAL}")
 
     while True:
         try:
             signal = check_signal()
 
             if signal and signal["time"] != last_signal_time:
-                msg = format_msg(signal)
+                msg = format_signal(signal)
                 print(msg)
                 send_telegram(msg)
                 last_signal_time = signal["time"]
             else:
-                print("Sin señal...")
+                print("Sin señal nueva...")
 
             time.sleep(SLEEP_SECONDS)
 
         except Exception as e:
-            err = f"⚠️ Error:\n{e}"
-            print(err)
-            send_telegram(err)
+            error_msg = f"⚠️ Error en bot:\n{e}"
+            print(error_msg)
+            send_telegram(error_msg)
             time.sleep(SLEEP_SECONDS)
 
 
