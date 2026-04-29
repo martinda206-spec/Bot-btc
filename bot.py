@@ -3,8 +3,11 @@ import time
 import requests
 import pandas as pd
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "2123346158")
+# ================= CONFIG =================
+
+# 👇 usa tus variables actuales de Railway
+TELEGRAM_BOT_TOKEN = os.getenv("TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("CHAT_ID", "2123346158")
 
 BASE_URL = "https://data-api.binance.vision"
 
@@ -23,10 +26,12 @@ TAKE_PROFIT_PCT = 0.0040
 SLEEP_SECONDS = 60
 last_signal_time = None
 
+# ==========================================
+
 
 def send_telegram(message):
     if not TELEGRAM_BOT_TOKEN:
-        print("Falta TELEGRAM_BOT_TOKEN")
+        print("Falta TOKEN")
         return
 
     try:
@@ -137,7 +142,7 @@ def main():
     global last_signal_time
 
     print("Bot de señales iniciado")
-    send_telegram(f"🤖 Bot de señales iniciado\nPar: {SYMBOL}\nTemporalidad: {INTERVAL}")
+    send_telegram(f"🤖 Bot activo\nPar: {SYMBOL}\nTemporalidad: {INTERVAL}")
 
     while True:
         try:
@@ -149,7 +154,7 @@ def main():
                 send_telegram(msg)
                 last_signal_time = signal["time"]
             else:
-                print("Sin señal nueva...")
+                print("Sin señal...")
 
             time.sleep(SLEEP_SECONDS)
 
