@@ -1,17 +1,15 @@
- # bot_senales_btcusdc_telegram.py
-
 import time
 import requests
 import pandas as pd
 
 # ================= CONFIG =================
 
-TELEGRAM_BOT_TOKEN = "8581404343:AAHCAZh6f0V55MBRtH1knrlR-1z23sDIWM0"
+TELEGRAM_BOT_TOKEN = "PEGA"
 TELEGRAM_CHAT_ID = "2123346158"
 
 BASE_URL = "https://fapi.binance.com"
 
-SYMBOL = "BTCUSDC"
+SYMBOL = "BTCUSDT"  # 🔥 CORREGIDO
 INTERVAL = "15m"
 
 EMA_FAST = 25
@@ -31,44 +29,44 @@ last_signal_time = None
 
 
 def send_telegram(message):
-    if not TELEGRAM_BOT_TOKEN:
-        print("Falta TELEGRAM_BOT_TOKEN")
-        return
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-
     try:
-        requests.post(url, data={
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": message,
-            "parse_mode": "HTML"
-        }, timeout=10)
-    except Exception as e:
-        print("Error Telegram:", e)
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            data={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": message,
+                "parse_mode": "HTML"
+            },
+            timeout=10
+        )
+    except:
+        pass
 
 
 def get_klines():
+    url = BASE_URL + "/fapi/v1/klines"
+
     r = requests.get(
-        BASE_URL + "/fapi/v1/klines",
+        url,
         params={
             "symbol": SYMBOL,
             "interval": INTERVAL,
             "limit": 150
         },
+        headers={"User-Agent": "Mozilla/5.0"},
         timeout=10
     )
-    r.raise_for_status()
 
+    r.raise_for_status()
     data = r.json()
 
     df = pd.DataFrame(data, columns=[
-        "time", "open", "high", "low", "close", "volume",
-        "close_time", "quote_volume", "trades",
-        "taker_buy_base", "taker_buy_quote", "ignore"
+        "time","open","high","low","close","volume",
+        "ct","qv","trades","tb","tq","ig"
     ])
 
-    df[["open", "high", "low", "close", "volume"]] = df[
-        ["open", "high", "low", "close", "volume"]
+    df[["open","high","low","close","volume"]] = df[
+        ["open","high","low","close","volume"]
     ].astype(float)
 
     df["ema25"] = df["close"].ewm(span=EMA_FAST).mean()
@@ -81,81 +79,72 @@ def get_klines():
 
 def check_signal():
     df = get_klines()
+    c = df.iloc[-2]
 
-    candle = df.iloc[-2]
+    close = c["close"]
+    open_ = c["open"]
+    volume = c["volume"]
 
-    open_ = candle["open"]
-    close = candle["close"]
-    volume = candle["volume"]
+    ema25 = c["ema25"]
+    ema50 = c["ema50"]
+    ema99 = c["ema99"]
+    vol_ma = c["vol_ma"]
 
-    ema25 = candle["ema25"]
-    ema50 = candle["ema50"]
-    ema99 = candle["ema99"]
-    vol_ma = candle["vol_ma"]
-
-    candle_time = int(candle["time"])
+    candle_time = int(c["time"])
 
     near = (
-        abs(close - ema25) / close <= PULLBACK_DISTANCE or
-        abs(close - ema50) / close <= PULLBACK_DISTANCE
+        abs(close - ema25)/close < PULLBACK_DISTANCE or
+        abs(close - ema50)/close < PULLBACK_DISTANCE
     )
 
-    volume_ok = volume > vol_ma
+    vol_ok = volume > vol_ma
 
-    bullish = close > open_
-    bearish = close < open_
-
-    if ema25 > ema50 and close > ema99 and bullish and near and volume_ok:
-        entry = close
+    if ema25 > ema50 and close > ema99 and close > open_ and near and vol_ok:
         return {
-            "type": "🟢 COMPRA / LONG",
-            "entry": entry,
-            "tp": entry * (1 + TAKE_PROFIT_PCT),
-            "sl": entry * (1 - STOP_LOSS_PCT),
+            "type": "🟢 LONG",
+            "entry": close,
+            "tp": close * (1 + TAKE_PROFIT_PCT),
+            "sl": close * (1 - STOP_LOSS_PCT),
             "time": candle_time
         }
 
-    if ema25 < ema50 and close < ema99 and bearish and near and volume_ok:
-        entry = close
+    if ema25 < ema50 and close < ema99 and close < open_ and near and vol_ok:
         return {
-            "type": "🔴 VENTA / SHORT",
-            "entry": entry,
-            "tp": entry * (1 - TAKE_PROFIT_PCT),
-            "sl": entry * (1 + STOP_LOSS_PCT),
+            "type": "🔴 SHORT",
+            "entry": close,
+            "tp": close * (1 - TAKE_PROFIT_PCT),
+            "sl": close * (1 + STOP_LOSS_PCT),
             "time": candle_time
         }
 
-    return None
 
-
-def format_signal(s):
+def format_msg(s):
     return (
-        f"📊 <b>SEÑAL BTCUSDC</b>\n\n"
-        f"Tipo: <b>{s['type']}</b>\n"
-        f"Entrada: <b>{s['entry']:.1f}</b>\n"
-        f"TP: <b>{s['tp']:.1f}</b>\n"
-        f"SL: <b>{s['sl']:.1f}</b>\n\n"
-        f"⏱ 15m | EMA + Volumen"
+        f"📊 <b>SEÑAL {SYMBOL}</b>\n\n"
+        f"{s['type']}\n"
+        f"Entrada: {s['entry']:.2f}\n"
+        f"TP: {s['tp']:.2f}\n"
+        f"SL: {s['sl']:.2f}\n\n"
+        f"⏱ 15m"
     )
 
 
 def main():
     global last_signal_time
 
-    print("Bot de señales iniciado")
-    send_telegram("🤖 Bot de señales BTCUSDC iniciado")
+    send_telegram(f"🤖 Bot activo ({SYMBOL})")
 
     while True:
         try:
             signal = check_signal()
 
             if signal and signal["time"] != last_signal_time:
-                msg = format_signal(signal)
+                msg = format_msg(signal)
                 print(msg)
                 send_telegram(msg)
                 last_signal_time = signal["time"]
             else:
-                print("Sin señal nueva...")
+                print("Sin señal...")
 
             time.sleep(SLEEP_SECONDS)
 
@@ -167,4 +156,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()           
+    main()
