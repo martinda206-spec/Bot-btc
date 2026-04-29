@@ -5,7 +5,7 @@ import pandas as pd
 
 # ================= CONFIG =================
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_BOT_TOKEN = os.getenv("8581404343:AAHCAZh6f0V55MBRtH1knrlR-1z23sDIWM0")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "2123346158")
 
 BASE_URL = "https://api.binance.com"
