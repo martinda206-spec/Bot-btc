@@ -3,7 +3,7 @@ import time
 import requests
 import pandas as pd
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN" "8581404343:AAHCAZh6f0V55MBRtH1knrlR-1z23sDIWM0")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "2123346158")
 
 BASE_URL = "https://data-api.binance.vision"
@@ -128,7 +128,8 @@ def format_signal(signal):
         f"Entrada: <b>{signal['entry']:.2f}</b>\n"
         f"TP: <b>{signal['tp']:.2f}</b>\n"
         f"SL: <b>{signal['sl']:.2f}</b>\n\n"
-        f"⏱ Temporalidad: {INTERVAL}"
+        f"⏱ Temporalidad: {INTERVAL}\n"
+        f"📈 Estrategia: EMA25 / EMA50 / EMA99 + Volumen"
     )
 
 
