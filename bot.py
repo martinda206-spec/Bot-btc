@@ -1,243 +1,170 @@
-import os
+ # bot_senales_btcusdc_telegram.py
+
 import time
 import requests
 import pandas as pd
 
-TOKEN = os.getenv("TOKEN")
-CHAT_ID = os.getenv("CHAT_ID", "2123346158")
+# ================= CONFIG =================
 
-SYMBOL = "BTCUSDT"
+TELEGRAM_BOT_TOKEN = "PEGÁ_ACÁ_TU_BOT_TOKEN"
+TELEGRAM_CHAT_ID = "2123346158"
+
+BASE_URL = "https://fapi.binance.com"
+
+SYMBOL = "BTCUSDC"
 INTERVAL = "15m"
 
-balance = 1000.0
-balance_inicial = 1000.0
+EMA_FAST = 25
+EMA_MID = 50
+EMA_SLOW = 99
+VOL_MA = 20
 
-apalancamiento = 5
-riesgo_por_trade = 0.01
+PULLBACK_DISTANCE = 0.002
+STOP_LOSS_PCT = 0.0025
+TAKE_PROFIT_PCT = 0.0040
 
-posicion_abierta = None
+SLEEP_SECONDS = 60
+
+last_signal_time = None
+
+# ==========================================
 
 
-def enviar_mensaje(texto):
-    if not TOKEN:
-        print("ERROR: falta TOKEN")
+def send_telegram(message):
+    if not TELEGRAM_BOT_TOKEN:
+        print("Falta TELEGRAM_BOT_TOKEN")
         return
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": texto}, timeout=10)
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+
+    try:
+        requests.post(url, data={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message,
+            "parse_mode": "HTML"
+        }, timeout=10)
+    except Exception as e:
+        print("Error Telegram:", e)
 
 
-def obtener_datos():
-    url = "https://fapi.binance.com/fapi/v1/klines"
-    params = {"symbol": SYMBOL, "interval": INTERVAL, "limit": 250}
+def get_klines():
+    r = requests.get(
+        BASE_URL + "/fapi/v1/klines",
+        params={
+            "symbol": SYMBOL,
+            "interval": INTERVAL,
+            "limit": 150
+        },
+        timeout=10
+    )
+    r.raise_for_status()
 
-    response = requests.get(url, params=params, timeout=10)
-    if response.status_code != 200:
-        return None
+    data = r.json()
 
-    data = response.json()
-    if not isinstance(data, list):
-        return None
+    df = pd.DataFrame(data, columns=[
+        "time", "open", "high", "low", "close", "volume",
+        "close_time", "quote_volume", "trades",
+        "taker_buy_base", "taker_buy_quote", "ignore"
+    ])
 
-    df = pd.DataFrame(data)
-    if df.empty:
-        return None
+    df[["open", "high", "low", "close", "volume"]] = df[
+        ["open", "high", "low", "close", "volume"]
+    ].astype(float)
 
-    df = df.iloc[:, :6]
-    df.columns = ["time", "open", "high", "low", "close", "volume"]
-
-    for col in df.columns[1:]:
-        df[col] = df[col].astype(float)
+    df["ema25"] = df["close"].ewm(span=EMA_FAST).mean()
+    df["ema50"] = df["close"].ewm(span=EMA_MID).mean()
+    df["ema99"] = df["close"].ewm(span=EMA_SLOW).mean()
+    df["vol_ma"] = df["volume"].rolling(VOL_MA).mean()
 
     return df
 
 
-def indicadores(df):
-    df["ema25"] = df["close"].ewm(span=25).mean()
-    df["ema50"] = df["close"].ewm(span=50).mean()
-    df["ema99"] = df["close"].ewm(span=99).mean()
+def check_signal():
+    df = get_klines()
 
-    df["vol_ma20"] = df["volume"].rolling(20).mean()
+    candle = df.iloc[-2]
 
-    delta = df["close"].diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    rs = gain.rolling(14).mean() / loss.rolling(14).mean()
-    df["rsi"] = 100 - (100 / (1 + rs))
+    open_ = candle["open"]
+    close = candle["close"]
+    volume = candle["volume"]
 
-    ema12 = df["close"].ewm(span=12).mean()
-    ema26 = df["close"].ewm(span=26).mean()
-    df["macd"] = ema12 - ema26
-    df["macd_signal"] = df["macd"].ewm(span=9).mean()
+    ema25 = candle["ema25"]
+    ema50 = candle["ema50"]
+    ema99 = candle["ema99"]
+    vol_ma = candle["vol_ma"]
 
-    df["max_20"] = df["high"].rolling(20).max()
-    df["min_20"] = df["low"].rolling(20).min()
+    candle_time = int(candle["time"])
 
-    df["atr"] = (df["high"] - df["low"]).rolling(14).mean()
-
-    return df
-
-
-def detectar(df):
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
-
-    if pd.isna(last["atr"]) or pd.isna(prev["max_20"]):
-        return "ESPERAR", last["close"], None
-
-    precio = last["close"]
-    volumen_ok = last["volume"] > last["vol_ma20"] * 1.2
-
-    long = (
-        precio > last["ema25"] > last["ema50"] > last["ema99"]
-        and last["rsi"] > 55
-        and last["macd"] > last["macd_signal"]
-        and precio > prev["max_20"]
-        and volumen_ok
+    near = (
+        abs(close - ema25) / close <= PULLBACK_DISTANCE or
+        abs(close - ema50) / close <= PULLBACK_DISTANCE
     )
 
-    short = (
-        precio < last["ema25"] < last["ema50"] < last["ema99"]
-        and last["rsi"] < 45
-        and last["macd"] < last["macd_signal"]
-        and precio < prev["min_20"]
-        and volumen_ok
+    volume_ok = volume > vol_ma
+
+    bullish = close > open_
+    bearish = close < open_
+
+    if ema25 > ema50 and close > ema99 and bullish and near and volume_ok:
+        entry = close
+        return {
+            "type": "🟢 COMPRA / LONG",
+            "entry": entry,
+            "tp": entry * (1 + TAKE_PROFIT_PCT),
+            "sl": entry * (1 - STOP_LOSS_PCT),
+            "time": candle_time
+        }
+
+    if ema25 < ema50 and close < ema99 and bearish and near and volume_ok:
+        entry = close
+        return {
+            "type": "🔴 VENTA / SHORT",
+            "entry": entry,
+            "tp": entry * (1 - TAKE_PROFIT_PCT),
+            "sl": entry * (1 + STOP_LOSS_PCT),
+            "time": candle_time
+        }
+
+    return None
+
+
+def format_signal(s):
+    return (
+        f"📊 <b>SEÑAL BTCUSDC</b>\n\n"
+        f"Tipo: <b>{s['type']}</b>\n"
+        f"Entrada: <b>{s['entry']:.1f}</b>\n"
+        f"TP: <b>{s['tp']:.1f}</b>\n"
+        f"SL: <b>{s['sl']:.1f}</b>\n\n"
+        f"⏱ 15m | EMA + Volumen"
     )
 
-    if long:
-        return "LONG", precio, last["atr"]
-    if short:
-        return "SHORT", precio, last["atr"]
 
-    return "ESPERAR", precio, None
+def main():
+    global last_signal_time
 
-
-def abrir_posicion(tipo, precio, atr):
-    global posicion_abierta, balance
-
-    riesgo = balance * riesgo_por_trade
-    distancia = atr * 1.5
-
-    cantidad = riesgo / distancia
-    tamaño = cantidad * precio
-    margen = tamaño / apalancamiento
-
-    if tipo == "LONG":
-        sl = precio - distancia
-        tp1 = precio + distancia * 2
-        tp2 = precio + distancia * 3
-    else:
-        sl = precio + distancia
-        tp1 = precio - distancia * 2
-        tp2 = precio - distancia * 3
-
-    posicion_abierta = {
-        "tipo": tipo,
-        "entrada": precio,
-        "sl": sl,
-        "tp1": tp1,
-        "tp2": tp2,
-        "cantidad_total": cantidad,
-        "cantidad_restante": cantidad,
-        "tp1_tomado": False,
-        "mejor_precio": precio
-    }
-
-    enviar_mensaje(f"""
-📥 NUEVA OPERACIÓN
-
-Tipo: {tipo}
-Entrada: {precio:.2f}
-SL: {sl:.2f}
-TP1: {tp1:.2f}
-TP2: {tp2:.2f}
-
-Balance: {balance:.2f}
-""")
-
-
-def gestionar(precio, atr):
-    global posicion_abierta, balance
-
-    if not posicion_abierta:
-        return
-
-    p = posicion_abierta
-    entrada = p["entrada"]
-
-    if p["tipo"] == "LONG":
-        p["mejor_precio"] = max(p["mejor_precio"], precio)
-
-        if not p["tp1_tomado"] and precio >= p["tp1"]:
-            pnl = (p["tp1"] - entrada) * (p["cantidad_total"] / 2)
-            balance += pnl
-            p["cantidad_restante"] /= 2
-            p["tp1_tomado"] = True
-            p["sl"] = entrada
-
-        if precio <= p["sl"]:
-            pnl = (p["sl"] - entrada) * p["cantidad_restante"]
-            balance += pnl
-            cerrar()
-
-        if precio >= p["tp2"]:
-            pnl = (p["tp2"] - entrada) * p["cantidad_restante"]
-            balance += pnl
-            cerrar()
-
-    else:
-        p["mejor_precio"] = min(p["mejor_precio"], precio)
-
-        if not p["tp1_tomado"] and precio <= p["tp1"]:
-            pnl = (entrada - p["tp1"]) * (p["cantidad_total"] / 2)
-            balance += pnl
-            p["cantidad_restante"] /= 2
-            p["tp1_tomado"] = True
-            p["sl"] = entrada
-
-        if precio >= p["sl"]:
-            pnl = (entrada - p["sl"]) * p["cantidad_restante"]
-            balance += pnl
-            cerrar()
-
-        if precio <= p["tp2"]:
-            pnl = (entrada - p["tp2"]) * p["cantidad_restante"]
-            balance += pnl
-            cerrar()
-
-
-def cerrar():
-    global posicion_abierta, balance
-    rendimiento = ((balance - balance_inicial) / balance_inicial) * 100
-
-    enviar_mensaje(f"""
-📤 CIERRE
-
-Balance: {balance:.2f}
-Rendimiento: {rendimiento:.2f}%
-""")
-
-    posicion_abierta = None
-
-
-def run():
-    enviar_mensaje("🚀 BOT PRO ACTIVO")
+    print("Bot de señales iniciado")
+    send_telegram("🤖 Bot de señales BTCUSDC iniciado")
 
     while True:
-        df = obtener_datos()
-        if df is None:
-            time.sleep(60)
-            continue
+        try:
+            signal = check_signal()
 
-        df = indicadores(df)
-        señal, precio, atr = detectar(df)
+            if signal and signal["time"] != last_signal_time:
+                msg = format_signal(signal)
+                print(msg)
+                send_telegram(msg)
+                last_signal_time = signal["time"]
+            else:
+                print("Sin señal nueva...")
 
-        gestionar(precio, atr)
+            time.sleep(SLEEP_SECONDS)
 
-        if señal != "ESPERAR" and posicion_abierta is None:
-            abrir_posicion(señal, precio, atr)
+        except Exception as e:
+            err = f"⚠️ Error:\n{e}"
+            print(err)
+            send_telegram(err)
+            time.sleep(SLEEP_SECONDS)
 
-        print(balance)
-        time.sleep(60)
 
-
-run()
+if __name__ == "__main__":
+    main()           
