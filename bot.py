@@ -5,7 +5,7 @@ import pandas as pd
 
 # ================= CONFIG =================
 
-# 👇 usa tus variables actuales de Railway
+# 👇 usa tus variables de Railway
 TELEGRAM_BOT_TOKEN = os.getenv("TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("CHAT_ID", "2123346158")
 
@@ -142,7 +142,9 @@ def main():
     global last_signal_time
 
     print("Bot de señales iniciado")
-    send_telegram(f"🤖 Bot activo\nPar: {SYMBOL}\nTemporalidad: {INTERVAL}")
+
+    # 🚀 MENSAJE MODIFICADO
+    send_telegram("🚀 BOT BTC SCALPING activo")
 
     while True:
         try:
