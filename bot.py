@@ -3,12 +3,10 @@ import time
 import requests
 import pandas as pd
 
-# ================= CONFIG =================
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN" "8581404343:AAHCAZh6f0V55MBRtH1knrlR-1z23sDIWM0")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "2123346158")
 
-TELEGRAM_BOT_TOKEN = os.getenv("8581404343:AAHCAZh6f0V55MBRtH1knrlR-1z23sDIWM0")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", 2123346158)
-
-BASE_URL = "https://api.binance.com"
+BASE_URL = "https://data-api.binance.vision"
 
 SYMBOL = "BTCUSDT"
 INTERVAL = "15m"
@@ -23,22 +21,17 @@ STOP_LOSS_PCT = 0.0025
 TAKE_PROFIT_PCT = 0.0040
 
 SLEEP_SECONDS = 60
-
 last_signal_time = None
-
-# ==========================================
 
 
 def send_telegram(message):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Falta TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID")
+    if not TELEGRAM_BOT_TOKEN:
+        print("Falta TELEGRAM_BOT_TOKEN")
         return
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-
     try:
-        r = requests.post(
-            url,
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
             data={
                 "chat_id": TELEGRAM_CHAT_ID,
                 "text": message,
@@ -46,24 +39,19 @@ def send_telegram(message):
             },
             timeout=10
         )
-        r.raise_for_status()
     except Exception as e:
-        print("Error enviando Telegram:", e)
+        print("Error Telegram:", e)
 
 
 def get_klines():
-    url = BASE_URL + "/api/v3/klines"
-
     r = requests.get(
-        url,
+        BASE_URL + "/api/v3/klines",
         params={
             "symbol": SYMBOL,
             "interval": INTERVAL,
             "limit": 150
         },
-        headers={
-            "User-Agent": "Mozilla/5.0"
-        },
+        headers={"User-Agent": "Mozilla/5.0"},
         timeout=10
     )
 
@@ -90,7 +78,6 @@ def get_klines():
 
 def check_signal():
     df = get_klines()
-
     candle = df.iloc[-2]
 
     open_price = candle["open"]
@@ -111,48 +98,23 @@ def check_signal():
 
     volume_ok = volume > vol_ma
 
-    bullish = close > open_price
-    bearish = close < open_price
-
-    long_signal = (
-        ema25 > ema50 and
-        close > ema99 and
-        bullish and
-        near_ema and
-        volume_ok
-    )
-
-    short_signal = (
-        ema25 < ema50 and
-        close < ema99 and
-        bearish and
-        near_ema and
-        volume_ok
-    )
-
-    if long_signal:
+    if ema25 > ema50 and close > ema99 and close > open_price and near_ema and volume_ok:
         entry = close
-        tp = entry * (1 + TAKE_PROFIT_PCT)
-        sl = entry * (1 - STOP_LOSS_PCT)
-
         return {
             "type": "🟢 COMPRA / LONG",
             "entry": entry,
-            "tp": tp,
-            "sl": sl,
+            "tp": entry * (1 + TAKE_PROFIT_PCT),
+            "sl": entry * (1 - STOP_LOSS_PCT),
             "time": candle_time
         }
 
-    if short_signal:
+    if ema25 < ema50 and close < ema99 and close < open_price and near_ema and volume_ok:
         entry = close
-        tp = entry * (1 - TAKE_PROFIT_PCT)
-        sl = entry * (1 + STOP_LOSS_PCT)
-
         return {
             "type": "🔴 VENTA / SHORT",
             "entry": entry,
-            "tp": tp,
-            "sl": sl,
+            "tp": entry * (1 - TAKE_PROFIT_PCT),
+            "sl": entry * (1 + STOP_LOSS_PCT),
             "time": candle_time
         }
 
@@ -164,10 +126,9 @@ def format_signal(signal):
         f"📊 <b>SEÑAL {SYMBOL}</b>\n\n"
         f"Tipo: <b>{signal['type']}</b>\n"
         f"Entrada: <b>{signal['entry']:.2f}</b>\n"
-        f"Take Profit: <b>{signal['tp']:.2f}</b>\n"
-        f"Stop Loss: <b>{signal['sl']:.2f}</b>\n\n"
-        f"⏱ Temporalidad: {INTERVAL}\n"
-        f"📈 Estrategia: EMA25 / EMA50 / EMA99 + Volumen"
+        f"TP: <b>{signal['tp']:.2f}</b>\n"
+        f"SL: <b>{signal['sl']:.2f}</b>\n\n"
+        f"⏱ Temporalidad: {INTERVAL}"
     )
 
 
@@ -192,9 +153,8 @@ def main():
             time.sleep(SLEEP_SECONDS)
 
         except Exception as e:
-            error_msg = f"⚠️ Error en bot:\n{e}"
-            print(error_msg)
-            send_telegram(error_msg)
+            print("Error en bot:", e)
+            send_telegram(f"⚠️ Error en bot:\n{e}")
             time.sleep(SLEEP_SECONDS)
 
 
