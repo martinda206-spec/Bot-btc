@@ -5,7 +5,7 @@ from datetime import datetime
 
 # ================= CONFIG =================
 
-TELEGRAM_TOKEN = "TU_TOKEN_AQUI"
+TELEGRAM_TOKEN = "8581404343:AAHCAZh6f0V55MBRtH1knrlR-1z23sDIWM0"
 CHAT_ID = "TU_CHAT_ID_AQUI"
 
 SYMBOL = "BTCUSDT"
