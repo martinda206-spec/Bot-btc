@@ -6,7 +6,7 @@ from datetime import datetime
 # ================= CONFIGURACIÓN =================
 
 TELEGRAM_TOKEN = "8581404343:AAHCAZh6f0V55MBRtH1knrlR-1z23sDIWM0"
-CHAT_ID = "TU_CHAT_ID_AQUI"
+CHAT_ID = "2123346158"
 
 SYMBOL = "BTCUSDT"
 INTERVAL = "15m"
