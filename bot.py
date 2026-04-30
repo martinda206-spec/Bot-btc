@@ -18,7 +18,7 @@ SL_TREND = 0.0025
 TP_RANGE = 0.003
 SL_RANGE = 0.0025
 
-MAX_DISTANCE_FROM_SIGNAL = 0.0015  # 0.15% anti-FOMO
+MAX_DISTANCE_FROM_SIGNAL = 0.0015
 
 SLEEP_TIME = 60
 
@@ -35,14 +35,16 @@ def send_telegram(message):
     }
 
     try:
-        requests.post(url, data=data, timeout=10)
+        r = requests.post(url, data=data, timeout=10)
+        r.raise_for_status()
     except Exception as e:
         print("Error Telegram:", e)
 
-# ================= BINANCE =================
+# ================= BINANCE SPOT =================
 
 def get_klines():
-    url = "https://fapi.binance.com/fapi/v1/klines"
+    url = "https://api.binance.com/api/v3/klines"
+
     params = {
         "symbol": SYMBOL,
         "interval": INTERVAL,
@@ -60,11 +62,8 @@ def get_klines():
         "taker_buy_base", "taker_buy_quote", "ignore"
     ])
 
-    df["open"] = df["open"].astype(float)
-    df["high"] = df["high"].astype(float)
-    df["low"] = df["low"].astype(float)
-    df["close"] = df["close"].astype(float)
-    df["volume"] = df["volume"].astype(float)
+    for col in ["open", "high", "low", "close", "volume"]:
+        df[col] = df[col].astype(float)
 
     return df
 
@@ -93,8 +92,8 @@ def detect_market(df):
     last = df.iloc[-1]
 
     ema_flat = last["ema_spread"] < 0.004
-
     range_size = (last["range_high"] - last["range_low"]) / last["close"]
+
     is_range = ema_flat and range_size < 0.025
 
     bullish_trend = (
@@ -131,10 +130,7 @@ def breakout_filter(df):
     breaks_up = last["close"] > high
     breaks_down = last["close"] < low
 
-    if strong_volume and (breaks_up or breaks_down):
-        return True
-
-    return False
+    return strong_volume and (breaks_up or breaks_down)
 
 # ================= FILTRO ANTI-FOMO =================
 
@@ -144,10 +140,7 @@ def anti_fomo_filter(df, signal):
 
     distance = abs(last_price - entry) / entry
 
-    if distance > MAX_DISTANCE_FROM_SIGNAL:
-        return False
-
-    return True
+    return distance <= MAX_DISTANCE_FROM_SIGNAL
 
 # ================= SEÑALES DE TENDENCIA =================
 
@@ -164,7 +157,6 @@ def trend_signal(df, market):
             entry = last["close"]
             tp = entry * (1 + TP_TREND)
             sl = entry * (1 - SL_TREND)
-
             return "COMPRA / LONG", entry, tp, sl, "Tendencia EMA + Volumen"
 
     if market == "TENDENCIA_BAJISTA":
@@ -174,7 +166,6 @@ def trend_signal(df, market):
             entry = last["close"]
             tp = entry * (1 - TP_TREND)
             sl = entry * (1 + SL_TREND)
-
             return "VENTA / SHORT", entry, tp, sl, "Tendencia EMA + Volumen"
 
     return None
@@ -210,26 +201,23 @@ def range_signal(df):
         entry = price
         tp = entry * (1 + TP_RANGE)
         sl = entry * (1 - SL_RANGE)
-
         return "COMPRA / LONG", entry, tp, sl, "Scalping por zona de soporte"
 
     if near_resistance and candle_reject_resistance and volume_not_extreme:
         entry = price
         tp = entry * (1 - TP_RANGE)
         sl = entry * (1 + SL_RANGE)
-
         return "VENTA / SHORT", entry, tp, sl, "Scalping por zona de resistencia"
 
     return None
 
-# ================= FORMATO DEL MENSAJE =================
+# ================= MENSAJE =================
 
 def format_signal(signal, market):
     side, entry, tp, sl, strategy = signal
-
     emoji = "🟢" if "COMPRA" in side else "🔴"
 
-    message = f"""
+    return f"""
 📊 <b>SEÑAL {SYMBOL}</b>
 
 Tipo: {emoji} <b>{side}</b>
@@ -242,9 +230,9 @@ SL: <b>{sl:.2f}</b>
 📈 Estrategia: <b>{strategy}</b>
 
 🛡 Anti-FOMO: activo
+🌐 Fuente: Binance Spot
 ⚠️ No perseguir el precio si ya se alejó de la entrada.
 """
-    return message
 
 # ================= LOOP PRINCIPAL =================
 
@@ -255,7 +243,8 @@ def run_bot():
         f"🚀 BOT BTC SCALPING activo\n"
         f"Par: {SYMBOL}\n"
         f"Temporalidad: {INTERVAL}\n"
-        f"Modo: Tendencia + Scalping por zonas + Anti-FOMO"
+        f"Modo: Tendencia + Scalping por zonas + Anti-FOMO\n"
+        f"Fuente: Binance Spot"
     )
 
     while True:
