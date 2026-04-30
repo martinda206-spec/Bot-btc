@@ -5,11 +5,11 @@ from datetime import datetime
 
 # ================= CONFIG =================
 
-TELEGRAM_TOKEN = "8581404343:AAHCAZh6f0V55MBRtH1knrlR-1z23sDIWM0"
+TELEGRAM_TOKEN = "TU_TOKEN_AQUI"
 CHAT_ID = "2123346158"
 
 SYMBOL = "BTCUSDT"
-INTERVAL = "15"   # Bybit usa "15" no "15m"
+INTERVAL = "15"
 LIMIT = 200
 
 TP_TREND = 0.004
@@ -19,7 +19,6 @@ TP_RANGE = 0.003
 SL_RANGE = 0.0025
 
 MAX_DISTANCE_FROM_SIGNAL = 0.0015
-
 SLEEP_TIME = 60
 
 last_signal = None
@@ -43,6 +42,10 @@ def send_telegram(message):
 def get_klines():
     url = "https://api.bybit.com/v5/market/kline"
 
+    headers = {
+        "User-Agent": "Mozilla/5.0"
+    }
+
     params = {
         "category": "linear",
         "symbol": SYMBOL,
@@ -50,8 +53,10 @@ def get_klines():
         "limit": LIMIT
     }
 
-    response = requests.get(url, params=params, timeout=10)
-    response.raise_for_status()
+    response = requests.get(url, headers=headers, params=params, timeout=10)
+
+    if response.status_code != 200:
+        raise Exception(f"Bybit error: {response.text}")
 
     data = response.json()["result"]["list"]
 
