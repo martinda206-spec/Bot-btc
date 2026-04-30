@@ -3,13 +3,13 @@ import requests
 import pandas as pd
 from datetime import datetime
 
-# ================= CONFIGURACIÓN =================
+# ================= CONFIG =================
 
-TELEGRAM_TOKEN = "8581404343:AAHCAZh6f0V55MBRtH1knrlR-1z23sDIWM0"
-CHAT_ID = "2123346158"
+TELEGRAM_TOKEN = "TU_TOKEN_AQUI"
+CHAT_ID = "TU_CHAT_ID_AQUI"
 
 SYMBOL = "BTCUSDT"
-INTERVAL = "15m"
+INTERVAL = "15"   # Bybit usa "15" no "15m"
 LIMIT = 200
 
 TP_TREND = 0.004
@@ -30,22 +30,21 @@ def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     data = {
         "chat_id": CHAT_ID,
-        "text": message,
-        "parse_mode": "HTML"
+        "text": message
     }
 
     try:
-        r = requests.post(url, data=data, timeout=10)
-        r.raise_for_status()
+        requests.post(url, data=data, timeout=10)
     except Exception as e:
         print("Error Telegram:", e)
 
-# ================= BINANCE SPOT =================
+# ================= BYBIT =================
 
 def get_klines():
-    url = "https://api.binance.com/api/v3/klines"
+    url = "https://api.bybit.com/v5/market/kline"
 
     params = {
+        "category": "linear",
         "symbol": SYMBOL,
         "interval": INTERVAL,
         "limit": LIMIT
@@ -54,12 +53,12 @@ def get_klines():
     response = requests.get(url, params=params, timeout=10)
     response.raise_for_status()
 
-    data = response.json()
+    data = response.json()["result"]["list"]
+
+    data.reverse()
 
     df = pd.DataFrame(data, columns=[
-        "time", "open", "high", "low", "close", "volume",
-        "close_time", "quote_volume", "trades",
-        "taker_buy_base", "taker_buy_quote", "ignore"
+        "time", "open", "high", "low", "close", "volume", "turnover"
     ])
 
     for col in ["open", "high", "low", "close", "volume"]:
@@ -70,9 +69,9 @@ def get_klines():
 # ================= INDICADORES =================
 
 def add_indicators(df):
-    df["ema25"] = df["close"].ewm(span=25, adjust=False).mean()
-    df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
-    df["ema99"] = df["close"].ewm(span=99, adjust=False).mean()
+    df["ema25"] = df["close"].ewm(span=25).mean()
+    df["ema50"] = df["close"].ewm(span=50).mean()
+    df["ema99"] = df["close"].ewm(span=99).mean()
 
     df["vol_ma"] = df["volume"].rolling(20).mean()
 
@@ -86,7 +85,7 @@ def add_indicators(df):
 
     return df
 
-# ================= DETECCIÓN DE MERCADO =================
+# ================= DETECCIÓN =================
 
 def detect_market(df):
     last = df.iloc[-1]
@@ -94,120 +93,63 @@ def detect_market(df):
     ema_flat = last["ema_spread"] < 0.004
     range_size = (last["range_high"] - last["range_low"]) / last["close"]
 
-    is_range = ema_flat and range_size < 0.025
-
-    bullish_trend = (
-        last["ema25"] > last["ema50"] > last["ema99"]
-        and last["close"] > last["ema25"]
-    )
-
-    bearish_trend = (
-        last["ema25"] < last["ema50"] < last["ema99"]
-        and last["close"] < last["ema25"]
-    )
-
-    if is_range:
+    if ema_flat and range_size < 0.025:
         return "RANGO"
 
-    if bullish_trend:
+    if last["ema25"] > last["ema50"] > last["ema99"]:
         return "TENDENCIA_ALCISTA"
 
-    if bearish_trend:
+    if last["ema25"] < last["ema50"] < last["ema99"]:
         return "TENDENCIA_BAJISTA"
 
     return "NEUTRAL"
 
-# ================= FILTRO DE RUPTURA =================
+# ================= FILTROS =================
 
 def breakout_filter(df):
     last = df.iloc[-1]
-
-    high = last["range_high"]
-    low = last["range_low"]
-
-    strong_volume = last["volume"] > last["vol_ma"] * 2
-
-    breaks_up = last["close"] > high
-    breaks_down = last["close"] < low
-
-    return strong_volume and (breaks_up or breaks_down)
-
-# ================= FILTRO ANTI-FOMO =================
+    return last["volume"] > last["vol_ma"] * 2
 
 def anti_fomo_filter(df, signal):
-    side, entry, tp, sl, strategy = signal
+    _, entry, _, _, _ = signal
     last_price = df.iloc[-1]["close"]
-
     distance = abs(last_price - entry) / entry
-
     return distance <= MAX_DISTANCE_FROM_SIGNAL
 
-# ================= SEÑALES DE TENDENCIA =================
+# ================= SEÑALES =================
 
 def trend_signal(df, market):
     last = df.iloc[-1]
     prev = df.iloc[-2]
 
-    volume_ok = last["volume"] > last["vol_ma"]
+    if last["volume"] > last["vol_ma"]:
 
-    if market == "TENDENCIA_ALCISTA":
-        pullback = prev["close"] < prev["ema25"] and last["close"] > last["ema25"]
+        if market == "TENDENCIA_ALCISTA":
+            if prev["close"] < prev["ema25"] and last["close"] > last["ema25"]:
+                entry = last["close"]
+                return "LONG", entry, entry*(1+TP_TREND), entry*(1-SL_TREND), "Tendencia"
 
-        if pullback and volume_ok:
-            entry = last["close"]
-            tp = entry * (1 + TP_TREND)
-            sl = entry * (1 - SL_TREND)
-            return "COMPRA / LONG", entry, tp, sl, "Tendencia EMA + Volumen"
-
-    if market == "TENDENCIA_BAJISTA":
-        pullback = prev["close"] > prev["ema25"] and last["close"] < last["ema25"]
-
-        if pullback and volume_ok:
-            entry = last["close"]
-            tp = entry * (1 - TP_TREND)
-            sl = entry * (1 + SL_TREND)
-            return "VENTA / SHORT", entry, tp, sl, "Tendencia EMA + Volumen"
+        if market == "TENDENCIA_BAJISTA":
+            if prev["close"] > prev["ema25"] and last["close"] < last["ema25"]:
+                entry = last["close"]
+                return "SHORT", entry, entry*(1-TP_TREND), entry*(1+SL_TREND), "Tendencia"
 
     return None
-
-# ================= SEÑALES DE RANGO =================
 
 def range_signal(df):
     last = df.iloc[-1]
 
-    price = last["close"]
     high = last["range_high"]
     low = last["range_low"]
+    price = last["close"]
 
-    range_width = high - low
-    zone_margin = range_width * 0.18
+    margin = (high - low) * 0.18
 
-    near_support = price <= low + zone_margin
-    near_resistance = price >= high - zone_margin
+    if price <= low + margin:
+        return "LONG", price, price*(1+TP_RANGE), price*(1-SL_RANGE), "Soporte"
 
-    candle_reject_support = (
-        last["low"] < low + zone_margin
-        and last["close"] > last["open"]
-    )
-
-    candle_reject_resistance = (
-        last["high"] > high - zone_margin
-        and last["close"] < last["open"]
-    )
-
-    volume_not_extreme = last["volume"] < last["vol_ma"] * 2.2
-
-    if near_support and candle_reject_support and volume_not_extreme:
-        entry = price
-        tp = entry * (1 + TP_RANGE)
-        sl = entry * (1 - SL_RANGE)
-        return "COMPRA / LONG", entry, tp, sl, "Scalping por zona de soporte"
-
-    if near_resistance and candle_reject_resistance and volume_not_extreme:
-        entry = price
-        tp = entry * (1 - TP_RANGE)
-        sl = entry * (1 + SL_RANGE)
-        return "VENTA / SHORT", entry, tp, sl, "Scalping por zona de resistencia"
+    if price >= high - margin:
+        return "SHORT", price, price*(1-TP_RANGE), price*(1+SL_RANGE), "Resistencia"
 
     return None
 
@@ -215,84 +157,65 @@ def range_signal(df):
 
 def format_signal(signal, market):
     side, entry, tp, sl, strategy = signal
-    emoji = "🟢" if "COMPRA" in side else "🔴"
+    emoji = "🟢" if side == "LONG" else "🔴"
 
     return f"""
-📊 <b>SEÑAL {SYMBOL}</b>
+📊 SEÑAL BTC
 
-Tipo: {emoji} <b>{side}</b>
-Entrada: <b>{entry:.2f}</b>
-TP: <b>{tp:.2f}</b>
-SL: <b>{sl:.2f}</b>
+{emoji} {side}
+Entrada: {entry:.2f}
+TP: {tp:.2f}
+SL: {sl:.2f}
 
-⏱ Temporalidad: <b>{INTERVAL}</b>
-📌 Mercado: <b>{market}</b>
-📈 Estrategia: <b>{strategy}</b>
+Mercado: {market}
+Estrategia: {strategy}
 
-🛡 Anti-FOMO: activo
-🌐 Fuente: Binance Spot
-⚠️ No perseguir el precio si ya se alejó de la entrada.
+🛡 Anti-FOMO activo
 """
 
-# ================= LOOP PRINCIPAL =================
+# ================= BOT =================
 
 def run_bot():
     global last_signal
 
-    send_telegram(
-        f"🚀 BOT BTC SCALPING activo\n"
-        f"Par: {SYMBOL}\n"
-        f"Temporalidad: {INTERVAL}\n"
-        f"Modo: Tendencia + Scalping por zonas + Anti-FOMO\n"
-        f"Fuente: Binance Spot"
-    )
+    send_telegram("🚀 BOT BTC SCALPING activo (Bybit)")
 
     while True:
         try:
-            df = get_klines()
-            df = add_indicators(df)
-
+            df = add_indicators(get_klines())
             market = detect_market(df)
-            signal = None
 
             if breakout_filter(df):
-                print(datetime.now(), "Ruptura fuerte detectada. No operar.")
+                print("Ruptura fuerte - no operar")
                 time.sleep(SLEEP_TIME)
                 continue
 
+            signal = None
+
             if market == "RANGO":
                 signal = range_signal(df)
-
-            elif market in ["TENDENCIA_ALCISTA", "TENDENCIA_BAJISTA"]:
+            else:
                 signal = trend_signal(df, market)
 
             if signal:
-                side, entry, tp, sl, strategy = signal
-
                 if not anti_fomo_filter(df, signal):
-                    print(datetime.now(), "Señal cancelada por anti-FOMO")
+                    print("Anti-FOMO bloqueó señal")
                     time.sleep(SLEEP_TIME)
                     continue
 
-                signal_id = f"{side}-{round(entry, 0)}-{strategy}"
-
-                if signal_id != last_signal:
-                    message = format_signal(signal, market)
-                    send_telegram(message)
-                    print(message)
-                    last_signal = signal_id
+                msg = format_signal(signal, market)
+                send_telegram(msg)
+                print(msg)
 
             else:
-                print(datetime.now(), "Sin señal | Mercado:", market)
+                print(datetime.now(), "Sin señal", market)
 
         except Exception as e:
-            error_msg = f"⚠️ Error del bot:\n{e}"
-            print(error_msg)
-            send_telegram(error_msg)
+            print("Error:", e)
+            send_telegram(f"⚠️ Error del bot:\n{e}")
 
         time.sleep(SLEEP_TIME)
 
-# ================= INICIO =================
+# ================= START =================
 
-if __name__ == "__main__":
-    run_bot()
+run_bot()
