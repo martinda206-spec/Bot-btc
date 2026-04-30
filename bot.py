@@ -40,7 +40,6 @@ def send_telegram(message):
 # ================= BYBIT =================
 
 def get_klines():
-def get_klines():
     url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
 
     params = {
