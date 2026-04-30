@@ -5,7 +5,7 @@ from datetime import datetime
 
 # ================= CONFIG =================
 
-TELEGRAM_TOKEN = "8581404343:AAHCAZh6f0V55MBRtH1knrlR-1z23sDIWM0"
+TELEGRAM_TOKEN = "TU_TOKEN_AQUI"
 CHAT_ID = "2123346158"
 
 SYMBOL = "BTCUSDT"
@@ -19,9 +19,13 @@ TP_RANGE = 0.003
 SL_RANGE = 0.0025
 
 MAX_DISTANCE_FROM_SIGNAL = 0.0015
+
 SLEEP_TIME = 60
+COOLDOWN_MINUTES = 30
 
 last_signal = None
+last_signal_time = 0
+last_signal_side = None
 
 # ================= TELEGRAM =================
 
@@ -40,34 +44,42 @@ def send_telegram(message):
 # ================= BYBIT =================
 
 def get_klines():
-    url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
+    url = "https://api.bybit.com/v5/market/kline"
 
-    params = {
-        "vs_currency": "usd",
-        "days": "1"
+    headers = {
+        "User-Agent": "Mozilla/5.0"
     }
 
-    response = requests.get(url, params=params, timeout=10)
-    response.raise_for_status()
+    params = {
+        "category": "linear",
+        "symbol": SYMBOL,
+        "interval": INTERVAL,
+        "limit": LIMIT
+    }
 
-    data = response.json()["prices"]
+    response = requests.get(url, headers=headers, params=params, timeout=10)
 
-    df = pd.DataFrame(data, columns=["time", "price"])
+    if response.status_code != 200:
+        raise Exception(f"Bybit error: {response.text}")
 
-    df["open"] = df["price"]
-    df["high"] = df["price"]
-    df["low"] = df["price"]
-    df["close"] = df["price"]
-    df["volume"] = 1
+    data = response.json()["result"]["list"]
+    data.reverse()
+
+    df = pd.DataFrame(data, columns=[
+        "time", "open", "high", "low", "close", "volume", "turnover"
+    ])
+
+    for col in ["open", "high", "low", "close", "volume"]:
+        df[col] = df[col].astype(float)
 
     return df
 
 # ================= INDICADORES =================
 
 def add_indicators(df):
-    df["ema25"] = df["close"].ewm(span=25).mean()
-    df["ema50"] = df["close"].ewm(span=50).mean()
-    df["ema99"] = df["close"].ewm(span=99).mean()
+    df["ema25"] = df["close"].ewm(span=25, adjust=False).mean()
+    df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
+    df["ema99"] = df["close"].ewm(span=99, adjust=False).mean()
 
     df["vol_ma"] = df["volume"].rolling(20).mean()
 
@@ -84,7 +96,7 @@ def add_indicators(df):
 # ================= DETECCIÓN =================
 
 def detect_market(df):
-    last = df.iloc[-1]
+    last = df.iloc[-2]  # usa vela cerrada
 
     ema_flat = last["ema_spread"] < 0.004
     range_size = (last["range_high"] - last["range_low"]) / last["close"]
@@ -103,20 +115,37 @@ def detect_market(df):
 # ================= FILTROS =================
 
 def breakout_filter(df):
-    last = df.iloc[-1]
+    last = df.iloc[-2]  # vela cerrada
     return last["volume"] > last["vol_ma"] * 2
 
 def anti_fomo_filter(df, signal):
     _, entry, _, _, _ = signal
     last_price = df.iloc[-1]["close"]
+
     distance = abs(last_price - entry) / entry
     return distance <= MAX_DISTANCE_FROM_SIGNAL
+
+def cooldown_filter(signal):
+    global last_signal_time, last_signal_side
+
+    side, entry, tp, sl, strategy = signal
+    now = time.time()
+
+    cooldown_seconds = COOLDOWN_MINUTES * 60
+
+    if now - last_signal_time < cooldown_seconds:
+        return False
+
+    if side == last_signal_side:
+        return False
+
+    return True
 
 # ================= SEÑALES =================
 
 def trend_signal(df, market):
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
+    last = df.iloc[-2]   # vela cerrada
+    prev = df.iloc[-3]
 
     if last["volume"] > last["vol_ma"]:
 
@@ -133,19 +162,19 @@ def trend_signal(df, market):
     return None
 
 def range_signal(df):
-    last = df.iloc[-1]
+    last = df.iloc[-2]  # vela cerrada
 
     high = last["range_high"]
     low = last["range_low"]
     price = last["close"]
 
-    margin = (high - low) * 0.18
+    margin = (high - low) * 0.15  # menos sensible
 
     if price <= low + margin:
-        return "LONG", price, price*(1+TP_RANGE), price*(1-SL_RANGE), "Soporte"
+        return "LONG", price, price*(1+TP_RANGE), price*(1-SL_RANGE), "Rango soporte"
 
     if price >= high - margin:
-        return "SHORT", price, price*(1-TP_RANGE), price*(1+SL_RANGE), "Resistencia"
+        return "SHORT", price, price*(1-TP_RANGE), price*(1+SL_RANGE), "Rango resistencia"
 
     return None
 
@@ -167,14 +196,22 @@ Mercado: {market}
 Estrategia: {strategy}
 
 🛡 Anti-FOMO activo
+⏳ Cooldown: {COOLDOWN_MINUTES} minutos
 """
 
 # ================= BOT =================
 
 def run_bot():
-    global last_signal
+    global last_signal_time, last_signal_side
 
-    send_telegram("🚀 BOT BTC SCALPING activo (Bybit)")
+    send_telegram(
+        f"🚀 BOT BTC SCALPING activo\n"
+        f"Par: {SYMBOL}\n"
+        f"Temporalidad: 15m\n"
+        f"Modo: Tendencia + Scalping por zonas\n"
+        f"Anti-FOMO: activo\n"
+        f"Cooldown: {COOLDOWN_MINUTES} minutos"
+    )
 
     while True:
         try:
@@ -182,7 +219,7 @@ def run_bot():
             market = detect_market(df)
 
             if breakout_filter(df):
-                print("Ruptura fuerte - no operar")
+                print(datetime.now(), "Ruptura fuerte - no operar")
                 time.sleep(SLEEP_TIME)
                 continue
 
@@ -195,7 +232,12 @@ def run_bot():
 
             if signal:
                 if not anti_fomo_filter(df, signal):
-                    print("Anti-FOMO bloqueó señal")
+                    print(datetime.now(), "Anti-FOMO bloqueó señal")
+                    time.sleep(SLEEP_TIME)
+                    continue
+
+                if not cooldown_filter(signal):
+                    print(datetime.now(), "Cooldown activo o señal repetida")
                     time.sleep(SLEEP_TIME)
                     continue
 
@@ -203,8 +245,11 @@ def run_bot():
                 send_telegram(msg)
                 print(msg)
 
+                last_signal_time = time.time()
+                last_signal_side = signal[0]
+
             else:
-                print(datetime.now(), "Sin señal", market)
+                print(datetime.now(), "Sin señal | Mercado:", market)
 
         except Exception as e:
             print("Error:", e)
