@@ -40,34 +40,26 @@ def send_telegram(message):
 # ================= BYBIT =================
 
 def get_klines():
-    url = "https://api.bybit.com/v5/market/kline"
-
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
+def get_klines():
+    url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
 
     params = {
-        "category": "linear",
-        "symbol": SYMBOL,
-        "interval": INTERVAL,
-        "limit": LIMIT
+        "vs_currency": "usd",
+        "days": "1"
     }
 
-    response = requests.get(url, headers=headers, params=params, timeout=10)
+    response = requests.get(url, params=params, timeout=10)
+    response.raise_for_status()
 
-    if response.status_code != 200:
-        raise Exception(f"Bybit error: {response.text}")
+    data = response.json()["prices"]
 
-    data = response.json()["result"]["list"]
+    df = pd.DataFrame(data, columns=["time", "price"])
 
-    data.reverse()
-
-    df = pd.DataFrame(data, columns=[
-        "time", "open", "high", "low", "close", "volume", "turnover"
-    ])
-
-    for col in ["open", "high", "low", "close", "volume"]:
-        df[col] = df[col].astype(float)
+    df["open"] = df["price"]
+    df["high"] = df["price"]
+    df["low"] = df["price"]
+    df["close"] = df["price"]
+    df["volume"] = 1
 
     return df
 
